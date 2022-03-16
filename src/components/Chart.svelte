@@ -5,59 +5,38 @@
   import { format } from 'd3-format'
 
   export let data
-  console.log(data)
 
   const padding = { top: 20, right: 40, bottom: 40, left: 25 }
-  const formatter = format('.1f')
+  const formatter = format('.2s')
 
   let figure
-  let width = 500
-  let height = 400
+  let width = 600
+  let height = 600
 
-  let maxXVal = Math.ceil(Math.max(...data.map((d) => d.gdp)))
+  let maxXVal = Math.ceil(Math.max(...data.map((d) => d.health_expenditure)))
   let maxYVal = Math.ceil(Math.max(...data.map((d) => d.life_expectancy)))
 
-  maxXVal = 1000000000000
   console.log(maxXVal, 'xVal')
 
   console.log(maxYVal, 'yval')
 
-  $: xTicks = range(0, maxXVal, 200000000000)
+  $: xTicks = range(0, maxXVal, 1500)
 
   $: console.log(xTicks)
 
-  $: yTicks = range(40, maxYVal + 20, 20)
+  $: yTicks = range(40, maxYVal + 10, 10)
 
   $: xScale = scaleLinear()
     .domain([0, Math.max(...xTicks)])
     .range([padding.left, width - padding.right])
 
   $: yScale = scaleLinear()
-    .domain([0, Math.max(...yTicks)])
+    .domain([40, Math.max(...yTicks)])
     .range([height - padding.bottom, padding.top])
 
-  // Helper f(n) for formatDecimalPlaces
-  function formatAmount(value) {
-    if (window.innerWidth < 768) {
-      return value.replace(/G/, 'B').slice(-1)[0]
-    }
-
-    if (value.includes('T')) {
-      return ' trillion'
-    } else if (value.includes('G')) {
-      return ' billion'
-    } else {
-      return ' million'
-    }
-  }
-
-  /* formats values up to two decimal places while maintaining 1-3 digits left of the first comma (eg 500.00B or 1.00T) */
-  function formatDecimalPlaces(value) {
-    let amt = formatAmount(format('.5s')(value))
-    let numOne = format('$.5s')(value).split('.')[0]
-    let numTwo = format('.5s')(value).split('.')[1].slice(0, 1)
-    return numOne + '.' + numTwo + amt
-  }
+  $: rScale = scaleSqrt()
+    .domain(extent(data, (d) => d.gdp))
+    .range([4, 25])
 
   const resize = () => {
     ;({ width, height } = figure.getBoundingClientRect())
@@ -78,9 +57,11 @@
     <!-- data -->
     {#each data as country}
       <circle
-        cx="{xScale(country.gdp)}px"
+        cx="{xScale(country.health_expenditure)}px"
         cy="{yScale(country.life_expectancy)}px"
-        r="5px"></circle>
+        r="{rScale(country.gdp)}"
+      >
+      </circle>
     {/each}
 
     <!-- y axis -->
@@ -102,19 +83,26 @@
         </g>
       {/each}
     </g>
+    <text
+      class="interactive__subheading subheading-x"
+      stroke="black"
+      fill="currentColor"
+    >
+      Vaccine Diplomacy Index
+    </text>
   </svg>
 </figure>
 
-<style>
+<style type="text/scss" global>
   .chart {
     width: 100%;
-    max-width: 500px;
+    max-width: 600px;
     margin: 0 auto;
   }
 
   svg {
     position: relative;
     width: 100%;
-    height: 400px;
+    height: 450px;
   }
 </style>

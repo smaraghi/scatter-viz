@@ -30,7 +30,7 @@ function parseData({ src }) {
         if (expCountry && expCountry.health_expenditure) {
           return [...acc, { ...country, health_expenditure: expCountry.health_expenditure }]
         } else {
-          return [...acc, country]
+          return acc
         }
 
       } else {
