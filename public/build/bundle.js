@@ -1,5 +1,5 @@
 
-(function(l, r) { if (!l || l.getElementById('livereloadscript')) return; r = l.createElement('script'); r.async = 1; r.src = '//' + (self.location.host || 'localhost').split(':')[0] + ':35730/livereload.js?snipver=1'; r.id = 'livereloadscript'; l.getElementsByTagName('head')[0].appendChild(r) })(self.document);
+(function(l, r) { if (!l || l.getElementById('livereloadscript')) return; r = l.createElement('script'); r.async = 1; r.src = '//' + (self.location.host || 'localhost').split(':')[0] + ':35729/livereload.js?snipver=1'; r.id = 'livereloadscript'; l.getElementsByTagName('head')[0].appendChild(r) })(self.document);
 var app = (function () {
     'use strict';
 
@@ -77,6 +77,59 @@ var app = (function () {
         else {
             node.style.setProperty(key, value, important ? 'important' : '');
         }
+    }
+    // unfortunately this can't be a constant as that wouldn't be tree-shakeable
+    // so we cache the result instead
+    let crossorigin;
+    function is_crossorigin() {
+        if (crossorigin === undefined) {
+            crossorigin = false;
+            try {
+                if (typeof window !== 'undefined' && window.parent) {
+                    void window.parent.document;
+                }
+            }
+            catch (error) {
+                crossorigin = true;
+            }
+        }
+        return crossorigin;
+    }
+    function add_resize_listener(node, fn) {
+        const computed_style = getComputedStyle(node);
+        if (computed_style.position === 'static') {
+            node.style.position = 'relative';
+        }
+        const iframe = element('iframe');
+        iframe.setAttribute('style', 'display: block; position: absolute; top: 0; left: 0; width: 100%; height: 100%; ' +
+            'overflow: hidden; border: 0; opacity: 0; pointer-events: none; z-index: -1;');
+        iframe.setAttribute('aria-hidden', 'true');
+        iframe.tabIndex = -1;
+        const crossorigin = is_crossorigin();
+        let unsubscribe;
+        if (crossorigin) {
+            iframe.src = "data:text/html,<script>onresize=function(){parent.postMessage(0,'*')}</script>";
+            unsubscribe = listen(window, 'message', (event) => {
+                if (event.source === iframe.contentWindow)
+                    fn();
+            });
+        }
+        else {
+            iframe.src = 'about:blank';
+            iframe.onload = () => {
+                unsubscribe = listen(iframe.contentWindow, 'resize', fn);
+            };
+        }
+        append(node, iframe);
+        return () => {
+            if (crossorigin) {
+                unsubscribe();
+            }
+            else if (unsubscribe && iframe.contentWindow) {
+                unsubscribe();
+            }
+            detach(iframe);
+        };
     }
     function custom_event(type, detail, bubbles = false) {
         const e = document.createEvent('CustomEvent');
@@ -715,18 +768,33 @@ var app = (function () {
     };
 
     function parseData({ src }) {
-      const scatterPromise = csv(src.scatter, stringify);
+      const expectancyPromise = csv(src.expectancy, stringify);
+      const expenditurePromise = csv(src.expenditure, stringify);
 
-      let data = Promise.all([scatterPromise]).then(res => {
+      let data = Promise.all([expectancyPromise, expenditurePromise]).then(res => {
         let [dataset] = res;
 
-        // Remove invalid values
-        dataset = dataset.filter(d => d.life_expectancy);
+        dataset = res[0].reduce((acc, country) => {
+
+          if (country.life_expectancy && (country.gdp || country.gdp === 0)) {
+            const expCountry = res[1].find(e => e.country === country.country);
+
+            if (expCountry && expCountry.health_expenditure) {
+              return [...acc, { ...country, health_expenditure: expCountry.health_expenditure }]
+            } else {
+              return [...acc, country]
+            }
+
+          } else {
+            return acc
+          }
+        }, []);
+
+        console.log(dataset);
 
         return dataset
       });
 
-      console.log(data);
       return data
     }
 
@@ -1979,30 +2047,121 @@ var app = (function () {
       return linearish(scale);
     }
 
+    function transformPow(exponent) {
+      return function(x) {
+        return x < 0 ? -Math.pow(-x, exponent) : Math.pow(x, exponent);
+      };
+    }
+
+    function transformSqrt(x) {
+      return x < 0 ? -Math.sqrt(-x) : Math.sqrt(x);
+    }
+
+    function transformSquare(x) {
+      return x < 0 ? -x * x : x * x;
+    }
+
+    function powish(transform) {
+      var scale = transform(identity$1, identity$1),
+          exponent = 1;
+
+      function rescale() {
+        return exponent === 1 ? transform(identity$1, identity$1)
+            : exponent === 0.5 ? transform(transformSqrt, transformSquare)
+            : transform(transformPow(exponent), transformPow(1 / exponent));
+      }
+
+      scale.exponent = function(_) {
+        return arguments.length ? (exponent = +_, rescale()) : exponent;
+      };
+
+      return linearish(scale);
+    }
+
+    function pow() {
+      var scale = powish(transformer());
+
+      scale.copy = function() {
+        return copy(scale, pow()).exponent(scale.exponent());
+      };
+
+      initRange.apply(scale, arguments);
+
+      return scale;
+    }
+
+    function sqrt() {
+      return pow.apply(null, arguments).exponent(0.5);
+    }
+
+    function extent(values, valueof) {
+      let min;
+      let max;
+      if (valueof === undefined) {
+        for (const value of values) {
+          if (value != null) {
+            if (min === undefined) {
+              if (value >= value) min = max = value;
+            } else {
+              if (min > value) min = value;
+              if (max < value) max = value;
+            }
+          }
+        }
+      } else {
+        let index = -1;
+        for (let value of values) {
+          if ((value = valueof(value, ++index, values)) != null) {
+            if (min === undefined) {
+              if (value >= value) min = max = value;
+            } else {
+              if (min > value) min = value;
+              if (max < value) max = value;
+            }
+          }
+        }
+      }
+      return [min, max];
+    }
+
+    function range(start, stop, step) {
+      start = +start, stop = +stop, step = (n = arguments.length) < 2 ? (stop = start, start = 0, 1) : n < 3 ? 1 : +step;
+
+      var i = -1,
+          n = Math.max(0, Math.ceil((stop - start) / step)) | 0,
+          range = new Array(n);
+
+      while (++i < n) {
+        range[i] = start + i * step;
+      }
+
+      return range;
+    }
+
     /* src/components/Chart.svelte generated by Svelte v3.46.4 */
 
-    const { console: console_1$1 } = globals;
+    const { console: console_1$1, window: window_1 } = globals;
     const file$2 = "src/components/Chart.svelte";
 
-    function get_each_context$2(ctx, list, i) {
-    	const child_ctx = ctx.slice();
-    	child_ctx[11] = list[i];
-    	return child_ctx;
-    }
-
-    function get_each_context_1(ctx, list, i) {
-    	const child_ctx = ctx.slice();
-    	child_ctx[11] = list[i];
-    	return child_ctx;
-    }
-
-    function get_each_context_2(ctx, list, i) {
+    function get_each_context$1(ctx, list, i) {
     	const child_ctx = ctx.slice();
     	child_ctx[16] = list[i];
     	return child_ctx;
     }
 
-    // (38:4) {#each data.mineralData as country}
+    function get_each_context_1(ctx, list, i) {
+    	const child_ctx = ctx.slice();
+    	child_ctx[16] = list[i];
+    	return child_ctx;
+    }
+
+    function get_each_context_2(ctx, list, i) {
+    	const child_ctx = ctx.slice();
+    	child_ctx[21] = list[i];
+    	return child_ctx;
+    }
+
+    // (79:4) {#each data as country}
     function create_each_block_2(ctx) {
     	let circle;
     	let circle_cx_value;
@@ -2011,20 +2170,20 @@ var app = (function () {
     	const block = {
     		c: function create() {
     			circle = svg_element("circle");
-    			attr_dev(circle, "cx", circle_cx_value = "" + (/*xScale*/ ctx[6](/*country*/ ctx[16].x) + "px"));
-    			attr_dev(circle, "cy", circle_cy_value = "" + (/*yScale*/ ctx[5](/*country*/ ctx[16].y) + "px"));
+    			attr_dev(circle, "cx", circle_cx_value = "" + (/*xScale*/ ctx[7](/*country*/ ctx[21].gdp) + "px"));
+    			attr_dev(circle, "cy", circle_cy_value = "" + (/*yScale*/ ctx[6](/*country*/ ctx[21].life_expectancy) + "px"));
     			attr_dev(circle, "r", "5px");
-    			add_location(circle, file$2, 38, 6, 776);
+    			add_location(circle, file$2, 79, 6, 1976);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, circle, anchor);
     		},
     		p: function update(ctx, dirty) {
-    			if (dirty & /*xScale, data*/ 65 && circle_cx_value !== (circle_cx_value = "" + (/*xScale*/ ctx[6](/*country*/ ctx[16].x) + "px"))) {
+    			if (dirty & /*xScale, data*/ 129 && circle_cx_value !== (circle_cx_value = "" + (/*xScale*/ ctx[7](/*country*/ ctx[21].gdp) + "px"))) {
     				attr_dev(circle, "cx", circle_cx_value);
     			}
 
-    			if (dirty & /*yScale, data*/ 33 && circle_cy_value !== (circle_cy_value = "" + (/*yScale*/ ctx[5](/*country*/ ctx[16].y) + "px"))) {
+    			if (dirty & /*yScale, data*/ 65 && circle_cy_value !== (circle_cy_value = "" + (/*yScale*/ ctx[6](/*country*/ ctx[21].life_expectancy) + "px"))) {
     				attr_dev(circle, "cy", circle_cy_value);
     			}
     		},
@@ -2037,20 +2196,20 @@ var app = (function () {
     		block,
     		id: create_each_block_2.name,
     		type: "each",
-    		source: "(38:4) {#each data.mineralData as country}",
+    		source: "(79:4) {#each data as country}",
     		ctx
     	});
 
     	return block;
     }
 
-    // (45:6) {#each yTicks as tick}
+    // (88:6) {#each yTicks as tick}
     function create_each_block_1(ctx) {
     	let g;
     	let line;
     	let line_x__value_1;
     	let text_1;
-    	let t_value = /*tick*/ ctx[11] + "";
+    	let t_value = /*tick*/ ctx[16] + "";
     	let t;
     	let g_class_value;
     	let g_transform_value;
@@ -2061,15 +2220,15 @@ var app = (function () {
     			line = svg_element("line");
     			text_1 = svg_element("text");
     			t = text$1(t_value);
-    			attr_dev(line, "x1", /*padding*/ ctx[7].left);
-    			attr_dev(line, "x2", line_x__value_1 = /*xScale*/ ctx[6](22));
-    			add_location(line, file$2, 46, 10, 1041);
-    			attr_dev(text_1, "x", /*padding*/ ctx[7].left - 8);
+    			attr_dev(line, "x1", /*padding*/ ctx[8].left);
+    			attr_dev(line, "x2", line_x__value_1 = /*xScale*/ ctx[7](22));
+    			add_location(line, file$2, 89, 10, 2274);
+    			attr_dev(text_1, "x", /*padding*/ ctx[8].left - 8);
     			attr_dev(text_1, "y", "+4");
-    			add_location(text_1, file$2, 47, 10, 1103);
-    			attr_dev(g, "class", g_class_value = "tick tick-" + /*tick*/ ctx[11]);
-    			attr_dev(g, "transform", g_transform_value = "translate(0, " + /*yScale*/ ctx[5](/*tick*/ ctx[11]) + ")");
-    			add_location(g, file$2, 45, 8, 961);
+    			add_location(text_1, file$2, 90, 10, 2336);
+    			attr_dev(g, "class", g_class_value = "tick tick-" + /*tick*/ ctx[16] + " svelte-1m72ry4");
+    			attr_dev(g, "transform", g_transform_value = "translate(0, " + /*yScale*/ ctx[6](/*tick*/ ctx[16]) + ")");
+    			add_location(g, file$2, 88, 8, 2194);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, g, anchor);
@@ -2078,17 +2237,17 @@ var app = (function () {
     			append_dev(text_1, t);
     		},
     		p: function update(ctx, dirty) {
-    			if (dirty & /*xScale*/ 64 && line_x__value_1 !== (line_x__value_1 = /*xScale*/ ctx[6](22))) {
+    			if (dirty & /*xScale*/ 128 && line_x__value_1 !== (line_x__value_1 = /*xScale*/ ctx[7](22))) {
     				attr_dev(line, "x2", line_x__value_1);
     			}
 
-    			if (dirty & /*yTicks*/ 8 && t_value !== (t_value = /*tick*/ ctx[11] + "")) set_data_dev(t, t_value);
+    			if (dirty & /*yTicks*/ 8 && t_value !== (t_value = /*tick*/ ctx[16] + "")) set_data_dev(t, t_value);
 
-    			if (dirty & /*yTicks*/ 8 && g_class_value !== (g_class_value = "tick tick-" + /*tick*/ ctx[11])) {
+    			if (dirty & /*yTicks*/ 8 && g_class_value !== (g_class_value = "tick tick-" + /*tick*/ ctx[16] + " svelte-1m72ry4")) {
     				attr_dev(g, "class", g_class_value);
     			}
 
-    			if (dirty & /*yScale, yTicks*/ 40 && g_transform_value !== (g_transform_value = "translate(0, " + /*yScale*/ ctx[5](/*tick*/ ctx[11]) + ")")) {
+    			if (dirty & /*yScale, yTicks*/ 72 && g_transform_value !== (g_transform_value = "translate(0, " + /*yScale*/ ctx[6](/*tick*/ ctx[16]) + ")")) {
     				attr_dev(g, "transform", g_transform_value);
     			}
     		},
@@ -2101,21 +2260,21 @@ var app = (function () {
     		block,
     		id: create_each_block_1.name,
     		type: "each",
-    		source: "(45:6) {#each yTicks as tick}",
+    		source: "(88:6) {#each yTicks as tick}",
     		ctx
     	});
 
     	return block;
     }
 
-    // (55:6) {#each xTicks as tick}
-    function create_each_block$2(ctx) {
+    // (98:6) {#each xTicks as tick}
+    function create_each_block$1(ctx) {
     	let g;
     	let line;
     	let line_y__value;
     	let line_y__value_1;
     	let text_1;
-    	let t_value = /*tick*/ ctx[11] + "";
+    	let t_value = /*formatter*/ ctx[9](/*tick*/ ctx[16]) + "";
     	let t;
     	let text_1_y_value;
     	let g_transform_value;
@@ -2126,14 +2285,14 @@ var app = (function () {
     			line = svg_element("line");
     			text_1 = svg_element("text");
     			t = text$1(t_value);
-    			attr_dev(line, "y1", line_y__value = /*yScale*/ ctx[5](0));
-    			attr_dev(line, "y2", line_y__value_1 = /*yScale*/ ctx[5](13));
-    			add_location(line, file$2, 56, 10, 1342);
-    			attr_dev(text_1, "y", text_1_y_value = /*height*/ ctx[1] - /*padding*/ ctx[7].bottom + 16);
-    			add_location(text_1, file$2, 57, 10, 1401);
+    			attr_dev(line, "y1", line_y__value = /*yScale*/ ctx[6](0));
+    			attr_dev(line, "y2", line_y__value_1 = /*yScale*/ ctx[6](13));
+    			add_location(line, file$2, 99, 10, 2575);
+    			attr_dev(text_1, "y", text_1_y_value = /*height*/ ctx[2] - /*padding*/ ctx[8].bottom + 16);
+    			add_location(text_1, file$2, 100, 10, 2634);
     			attr_dev(g, "class", "tick");
-    			attr_dev(g, "transform", g_transform_value = "translate(" + /*xScale*/ ctx[6](/*tick*/ ctx[11]) + ",0)");
-    			add_location(g, file$2, 55, 8, 1275);
+    			attr_dev(g, "transform", g_transform_value = "translate(" + /*xScale*/ ctx[7](/*tick*/ ctx[16]) + ",0)");
+    			add_location(g, file$2, 98, 8, 2508);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, g, anchor);
@@ -2142,21 +2301,21 @@ var app = (function () {
     			append_dev(text_1, t);
     		},
     		p: function update(ctx, dirty) {
-    			if (dirty & /*yScale*/ 32 && line_y__value !== (line_y__value = /*yScale*/ ctx[5](0))) {
+    			if (dirty & /*yScale*/ 64 && line_y__value !== (line_y__value = /*yScale*/ ctx[6](0))) {
     				attr_dev(line, "y1", line_y__value);
     			}
 
-    			if (dirty & /*yScale*/ 32 && line_y__value_1 !== (line_y__value_1 = /*yScale*/ ctx[5](13))) {
+    			if (dirty & /*yScale*/ 64 && line_y__value_1 !== (line_y__value_1 = /*yScale*/ ctx[6](13))) {
     				attr_dev(line, "y2", line_y__value_1);
     			}
 
-    			if (dirty & /*xTicks*/ 16 && t_value !== (t_value = /*tick*/ ctx[11] + "")) set_data_dev(t, t_value);
+    			if (dirty & /*xTicks*/ 16 && t_value !== (t_value = /*formatter*/ ctx[9](/*tick*/ ctx[16]) + "")) set_data_dev(t, t_value);
 
-    			if (dirty & /*height*/ 2 && text_1_y_value !== (text_1_y_value = /*height*/ ctx[1] - /*padding*/ ctx[7].bottom + 16)) {
+    			if (dirty & /*height*/ 4 && text_1_y_value !== (text_1_y_value = /*height*/ ctx[2] - /*padding*/ ctx[8].bottom + 16)) {
     				attr_dev(text_1, "y", text_1_y_value);
     			}
 
-    			if (dirty & /*xScale, xTicks*/ 80 && g_transform_value !== (g_transform_value = "translate(" + /*xScale*/ ctx[6](/*tick*/ ctx[11]) + ",0)")) {
+    			if (dirty & /*xScale, xTicks*/ 144 && g_transform_value !== (g_transform_value = "translate(" + /*xScale*/ ctx[7](/*tick*/ ctx[16]) + ",0)")) {
     				attr_dev(g, "transform", g_transform_value);
     			}
     		},
@@ -2167,9 +2326,9 @@ var app = (function () {
 
     	dispatch_dev("SvelteRegisterBlock", {
     		block,
-    		id: create_each_block$2.name,
+    		id: create_each_block$1.name,
     		type: "each",
-    		source: "(55:6) {#each xTicks as tick}",
+    		source: "(98:6) {#each xTicks as tick}",
     		ctx
     	});
 
@@ -2181,9 +2340,10 @@ var app = (function () {
     	let svg;
     	let g0;
     	let g1;
+    	let figure_1_resize_listener;
     	let mounted;
     	let dispose;
-    	let each_value_2 = /*data*/ ctx[0].mineralData;
+    	let each_value_2 = /*data*/ ctx[0];
     	validate_each_argument(each_value_2);
     	let each_blocks_2 = [];
 
@@ -2204,7 +2364,7 @@ var app = (function () {
     	let each_blocks = [];
 
     	for (let i = 0; i < each_value.length; i += 1) {
-    		each_blocks[i] = create_each_block$2(get_each_context$2(ctx, each_value, i));
+    		each_blocks[i] = create_each_block$1(get_each_context$1(ctx, each_value, i));
     	}
 
     	const block = {
@@ -2229,12 +2389,14 @@ var app = (function () {
     			}
 
     			attr_dev(g0, "class", "axis y-axis");
-    			add_location(g0, file$2, 43, 4, 900);
+    			add_location(g0, file$2, 86, 4, 2133);
     			attr_dev(g1, "class", "axis x-axis");
-    			add_location(g1, file$2, 53, 4, 1214);
-    			add_location(svg, file$2, 35, 2, 706);
-    			attr_dev(figure_1, "class", "svelte-bi4ck3");
-    			add_location(figure_1, file$2, 34, 0, 674);
+    			add_location(g1, file$2, 96, 4, 2447);
+    			attr_dev(svg, "class", "svelte-1m72ry4");
+    			add_location(svg, file$2, 76, 2, 1918);
+    			attr_dev(figure_1, "class", "chart svelte-1m72ry4");
+    			add_render_callback(() => /*figure_1_elementresize_handler*/ ctx[13].call(figure_1));
+    			add_location(figure_1, file$2, 70, 0, 1807);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
@@ -2259,16 +2421,17 @@ var app = (function () {
     				each_blocks[i].m(g1, null);
     			}
 
-    			/*figure_1_binding*/ ctx[10](figure_1);
+    			/*figure_1_binding*/ ctx[12](figure_1);
+    			figure_1_resize_listener = add_resize_listener(figure_1, /*figure_1_elementresize_handler*/ ctx[13].bind(figure_1));
 
     			if (!mounted) {
-    				dispose = listen_dev(window, "resize", /*resize*/ ctx[8], false, false, false);
+    				dispose = listen_dev(window_1, "resize", /*resize*/ ctx[10], false, false, false);
     				mounted = true;
     			}
     		},
     		p: function update(ctx, [dirty]) {
-    			if (dirty & /*xScale, data, yScale*/ 97) {
-    				each_value_2 = /*data*/ ctx[0].mineralData;
+    			if (dirty & /*xScale, data, yScale*/ 193) {
+    				each_value_2 = /*data*/ ctx[0];
     				validate_each_argument(each_value_2);
     				let i;
 
@@ -2291,7 +2454,7 @@ var app = (function () {
     				each_blocks_2.length = each_value_2.length;
     			}
 
-    			if (dirty & /*yTicks, yScale, padding, xScale*/ 232) {
+    			if (dirty & /*yTicks, yScale, padding, xScale*/ 456) {
     				each_value_1 = /*yTicks*/ ctx[3];
     				validate_each_argument(each_value_1);
     				let i;
@@ -2315,18 +2478,18 @@ var app = (function () {
     				each_blocks_1.length = each_value_1.length;
     			}
 
-    			if (dirty & /*xScale, xTicks, height, padding, yScale*/ 242) {
+    			if (dirty & /*xScale, xTicks, height, padding, formatter, yScale*/ 980) {
     				each_value = /*xTicks*/ ctx[4];
     				validate_each_argument(each_value);
     				let i;
 
     				for (i = 0; i < each_value.length; i += 1) {
-    					const child_ctx = get_each_context$2(ctx, each_value, i);
+    					const child_ctx = get_each_context$1(ctx, each_value, i);
 
     					if (each_blocks[i]) {
     						each_blocks[i].p(child_ctx, dirty);
     					} else {
-    						each_blocks[i] = create_each_block$2(child_ctx);
+    						each_blocks[i] = create_each_block$1(child_ctx);
     						each_blocks[i].c();
     						each_blocks[i].m(g1, null);
     					}
@@ -2346,7 +2509,8 @@ var app = (function () {
     			destroy_each(each_blocks_2, detaching);
     			destroy_each(each_blocks_1, detaching);
     			destroy_each(each_blocks, detaching);
-    			/*figure_1_binding*/ ctx[10](null);
+    			/*figure_1_binding*/ ctx[12](null);
+    			figure_1_resize_listener();
     			mounted = false;
     			dispose();
     		}
@@ -2363,22 +2527,50 @@ var app = (function () {
     	return block;
     }
 
+    function formatAmount(value) {
+    	if (window.innerWidth < 768) {
+    		return value.replace(/G/, 'B').slice(-1)[0];
+    	}
+
+    	if (value.includes('T')) {
+    		return ' trillion';
+    	} else if (value.includes('G')) {
+    		return ' billion';
+    	} else {
+    		return ' million';
+    	}
+    }
+
     function instance$2($$self, $$props, $$invalidate) {
-    	let xScale;
-    	let yScale;
     	let xTicks;
     	let yTicks;
+    	let xScale;
+    	let yScale;
     	let { $$slots: slots = {}, $$scope } = $$props;
     	validate_slots('Chart', slots, []);
     	let { data } = $$props;
     	console.log(data);
+    	const padding = { top: 20, right: 40, bottom: 40, left: 25 };
+    	const formatter = format('.1f');
     	let figure;
     	let width = 500;
-    	let height = 300;
-    	const padding = { top: 20, right: 40, bottom: 40, left: 25 };
+    	let height = 400;
+    	let maxXVal = Math.ceil(Math.max(...data.map(d => d.gdp)));
+    	let maxYVal = Math.ceil(Math.max(...data.map(d => d.life_expectancy)));
+    	maxXVal = 1000000000000;
+    	console.log(maxXVal, 'xVal');
+    	console.log(maxYVal, 'yval');
+
+    	/* formats values up to two decimal places while maintaining 1-3 digits left of the first comma (eg 500.00B or 1.00T) */
+    	function formatDecimalPlaces(value) {
+    		let amt = formatAmount(format('.5s')(value));
+    		let numOne = format('$.5s')(value).split('.')[0];
+    		let numTwo = format('.5s')(value).split('.')[1].slice(0, 1);
+    		return numOne + '.' + numTwo + amt;
+    	}
 
     	const resize = () => {
-    		$$invalidate(9, { width, height } = figure.getBoundingClientRect(), width, $$invalidate(1, height));
+    		$$invalidate(1, { width, height } = figure.getBoundingClientRect(), width, $$invalidate(2, height));
     	};
 
     	onMount(resize);
@@ -2391,8 +2583,15 @@ var app = (function () {
     	function figure_1_binding($$value) {
     		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
     			figure = $$value;
-    			$$invalidate(2, figure);
+    			$$invalidate(5, figure);
     		});
+    	}
+
+    	function figure_1_elementresize_handler() {
+    		width = this.clientWidth;
+    		height = this.clientHeight;
+    		$$invalidate(1, width);
+    		$$invalidate(2, height);
     	}
 
     	$$self.$$set = $$props => {
@@ -2402,27 +2601,38 @@ var app = (function () {
     	$$self.$capture_state = () => ({
     		onMount,
     		scaleLinear: linear,
+    		scaleSqrt: sqrt,
+    		extent,
+    		range,
+    		format,
     		data,
+    		padding,
+    		formatter,
     		figure,
     		width,
     		height,
-    		padding,
+    		maxXVal,
+    		maxYVal,
+    		formatAmount,
+    		formatDecimalPlaces,
     		resize,
     		yTicks,
-    		xTicks,
     		yScale,
+    		xTicks,
     		xScale
     	});
 
     	$$self.$inject_state = $$props => {
     		if ('data' in $$props) $$invalidate(0, data = $$props.data);
-    		if ('figure' in $$props) $$invalidate(2, figure = $$props.figure);
-    		if ('width' in $$props) $$invalidate(9, width = $$props.width);
-    		if ('height' in $$props) $$invalidate(1, height = $$props.height);
+    		if ('figure' in $$props) $$invalidate(5, figure = $$props.figure);
+    		if ('width' in $$props) $$invalidate(1, width = $$props.width);
+    		if ('height' in $$props) $$invalidate(2, height = $$props.height);
+    		if ('maxXVal' in $$props) $$invalidate(11, maxXVal = $$props.maxXVal);
+    		if ('maxYVal' in $$props) $$invalidate(14, maxYVal = $$props.maxYVal);
     		if ('yTicks' in $$props) $$invalidate(3, yTicks = $$props.yTicks);
+    		if ('yScale' in $$props) $$invalidate(6, yScale = $$props.yScale);
     		if ('xTicks' in $$props) $$invalidate(4, xTicks = $$props.xTicks);
-    		if ('yScale' in $$props) $$invalidate(5, yScale = $$props.yScale);
-    		if ('xScale' in $$props) $$invalidate(6, xScale = $$props.xScale);
+    		if ('xScale' in $$props) $$invalidate(7, xScale = $$props.xScale);
     	};
 
     	if ($$props && "$$inject" in $$props) {
@@ -2430,30 +2640,40 @@ var app = (function () {
     	}
 
     	$$self.$$.update = () => {
-    		if ($$self.$$.dirty & /*width*/ 512) {
-    			$$invalidate(6, xScale = linear().domain([0, 20]).range([padding.left, width - padding.right]));
+    		if ($$self.$$.dirty & /*maxXVal*/ 2048) {
+    			$$invalidate(4, xTicks = range(0, maxXVal, 200000000000));
     		}
 
-    		if ($$self.$$.dirty & /*height*/ 2) {
-    			$$invalidate(5, yScale = linear().domain([0, 12]).range([height - padding.bottom, padding.top]));
+    		if ($$self.$$.dirty & /*xTicks*/ 16) {
+    			console.log(xTicks);
+    		}
+
+    		if ($$self.$$.dirty & /*xTicks, width*/ 18) {
+    			$$invalidate(7, xScale = linear().domain([0, Math.max(...xTicks)]).range([padding.left, width - padding.right]));
+    		}
+
+    		if ($$self.$$.dirty & /*yTicks, height*/ 12) {
+    			$$invalidate(6, yScale = linear().domain([0, Math.max(...yTicks)]).range([height - padding.bottom, padding.top]));
     		}
     	};
 
-    	$$invalidate(4, xTicks = [0, 4, 8, 12, 16, 20]);
-    	$$invalidate(3, yTicks = [0, 2, 4, 6, 8, 10, 12]);
+    	$$invalidate(3, yTicks = range(40, maxYVal + 20, 20));
 
     	return [
     		data,
+    		width,
     		height,
-    		figure,
     		yTicks,
     		xTicks,
+    		figure,
     		yScale,
     		xScale,
     		padding,
+    		formatter,
     		resize,
-    		width,
-    		figure_1_binding
+    		maxXVal,
+    		figure_1_binding,
+    		figure_1_elementresize_handler
     	];
     }
 
@@ -2490,7 +2710,7 @@ var app = (function () {
 
     const file$1 = "src/components/Legend.svelte";
 
-    function get_each_context$1(ctx, list, i) {
+    function get_each_context(ctx, list, i) {
     	const child_ctx = ctx.slice();
     	child_ctx[4] = list[i];
     	child_ctx[6] = i;
@@ -2498,7 +2718,7 @@ var app = (function () {
     }
 
     // (28:4) {#each legendValues as d, legendIndex}
-    function create_each_block$1(ctx) {
+    function create_each_block(ctx) {
     	let circle;
     	let circle_r_value;
     	let circle_fill_value;
@@ -2557,7 +2777,7 @@ var app = (function () {
 
     	dispatch_dev("SvelteRegisterBlock", {
     		block,
-    		id: create_each_block$1.name,
+    		id: create_each_block.name,
     		type: "each",
     		source: "(28:4) {#each legendValues as d, legendIndex}",
     		ctx
@@ -2582,7 +2802,7 @@ var app = (function () {
     	let each_blocks = [];
 
     	for (let i = 0; i < each_value.length; i += 1) {
-    		each_blocks[i] = create_each_block$1(get_each_context$1(ctx, each_value, i));
+    		each_blocks[i] = create_each_block(get_each_context(ctx, each_value, i));
     	}
 
     	const block = {
@@ -2629,12 +2849,12 @@ var app = (function () {
     				let i;
 
     				for (i = 0; i < each_value.length; i += 1) {
-    					const child_ctx = get_each_context$1(ctx, each_value, i);
+    					const child_ctx = get_each_context(ctx, each_value, i);
 
     					if (each_blocks[i]) {
     						each_blocks[i].p(child_ctx, dirty);
     					} else {
-    						each_blocks[i] = create_each_block$1(child_ctx);
+    						each_blocks[i] = create_each_block(child_ctx);
     						each_blocks[i].c();
     						each_blocks[i].m(svg, null);
     					}
@@ -2809,16 +3029,10 @@ var app = (function () {
     const { console: console_1 } = globals;
     const file = "src/App.svelte";
 
-    function get_each_context(ctx, list, i) {
-    	const child_ctx = ctx.slice();
-    	child_ctx[1] = list[i];
-    	return child_ctx;
-    }
-
-    // (94:2) {:catch error}
+    // (95:2) {:catch error}
     function create_catch_block(ctx) {
     	let p;
-    	let t_value = /*error*/ ctx[10].message + "";
+    	let t_value = /*error*/ ctx[8].message + "";
     	let t;
 
     	const block = {
@@ -2826,7 +3040,7 @@ var app = (function () {
     			p = element("p");
     			t = text$1(t_value);
     			set_style(p, "color", "red");
-    			add_location(p, file, 94, 4, 2386);
+    			add_location(p, file, 95, 4, 2529);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, p, anchor);
@@ -2844,131 +3058,21 @@ var app = (function () {
     		block,
     		id: create_catch_block.name,
     		type: "catch",
-    		source: "(94:2) {:catch error}",
+    		source: "(95:2) {:catch error}",
     		ctx
     	});
 
     	return block;
     }
 
-    // (72:2) {:then allData}
+    // (75:2) {:then allData}
     function create_then_block(ctx) {
-    	let t;
-    	let div;
-    	let legend;
-    	let current;
-    	let each_value = /*allData*/ ctx[7];
-    	validate_each_argument(each_value);
-    	let each_blocks = [];
-
-    	for (let i = 0; i < each_value.length; i += 1) {
-    		each_blocks[i] = create_each_block(get_each_context(ctx, each_value, i));
-    	}
-
-    	const out = i => transition_out(each_blocks[i], 1, 1, () => {
-    		each_blocks[i] = null;
-    	});
-
-    	legend = new Legend({ $$inline: true });
-
-    	const block = {
-    		c: function create() {
-    			for (let i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].c();
-    			}
-
-    			t = space();
-    			div = element("div");
-    			create_component(legend.$$.fragment);
-    			attr_dev(div, "class", "interactive__legend-container");
-    			add_location(div, file, 77, 4, 1960);
-    		},
-    		m: function mount(target, anchor) {
-    			for (let i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].m(target, anchor);
-    			}
-
-    			insert_dev(target, t, anchor);
-    			insert_dev(target, div, anchor);
-    			mount_component(legend, div, null);
-    			current = true;
-    		},
-    		p: function update(ctx, dirty) {
-    			if (dirty & /*data, isMobile*/ 3) {
-    				each_value = /*allData*/ ctx[7];
-    				validate_each_argument(each_value);
-    				let i;
-
-    				for (i = 0; i < each_value.length; i += 1) {
-    					const child_ctx = get_each_context(ctx, each_value, i);
-
-    					if (each_blocks[i]) {
-    						each_blocks[i].p(child_ctx, dirty);
-    						transition_in(each_blocks[i], 1);
-    					} else {
-    						each_blocks[i] = create_each_block(child_ctx);
-    						each_blocks[i].c();
-    						transition_in(each_blocks[i], 1);
-    						each_blocks[i].m(t.parentNode, t);
-    					}
-    				}
-
-    				group_outros();
-
-    				for (i = each_value.length; i < each_blocks.length; i += 1) {
-    					out(i);
-    				}
-
-    				check_outros();
-    			}
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-
-    			for (let i = 0; i < each_value.length; i += 1) {
-    				transition_in(each_blocks[i]);
-    			}
-
-    			transition_in(legend.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			each_blocks = each_blocks.filter(Boolean);
-
-    			for (let i = 0; i < each_blocks.length; i += 1) {
-    				transition_out(each_blocks[i]);
-    			}
-
-    			transition_out(legend.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			destroy_each(each_blocks, detaching);
-    			if (detaching) detach_dev(t);
-    			if (detaching) detach_dev(div);
-    			destroy_component(legend);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_then_block.name,
-    		type: "then",
-    		source: "(72:2) {:then allData}",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    // (74:4) {#each allData as data}
-    function create_each_block(ctx) {
     	let chart;
     	let current;
 
     	chart = new Chart({
     			props: {
-    				data: /*data*/ ctx[1],
+    				data: /*allData*/ ctx[7],
     				isMobile: /*isMobile*/ ctx[0]
     			},
     			$$inline: true
@@ -3003,16 +3107,16 @@ var app = (function () {
 
     	dispatch_dev("SvelteRegisterBlock", {
     		block,
-    		id: create_each_block.name,
-    		type: "each",
-    		source: "(74:4) {#each allData as data}",
+    		id: create_then_block.name,
+    		type: "then",
+    		source: "(75:2) {:then allData}",
     		ctx
     	});
 
     	return block;
     }
 
-    // (68:15)      <!-- <div class="loading-container">     <div class="loading"></div>   </div> -->   {:then allData}
+    // (71:15)      <!-- <div class="loading-container">     <div class="loading"></div>   </div> -->   {:then allData}
     function create_pending_block(ctx) {
     	const block = {
     		c: noop,
@@ -3027,7 +3131,7 @@ var app = (function () {
     		block,
     		id: create_pending_block.name,
     		type: "pending",
-    		source: "(68:15)      <!-- <div class=\\\"loading-container\\\">     <div class=\\\"loading\\\"></div>   </div> -->   {:then allData}",
+    		source: "(71:15)      <!-- <div class=\\\"loading-container\\\">     <div class=\\\"loading\\\"></div>   </div> -->   {:then allData}",
     		ctx
     	});
 
@@ -3052,7 +3156,7 @@ var app = (function () {
     		then: create_then_block,
     		catch: create_catch_block,
     		value: 7,
-    		error: 10,
+    		error: 8,
     		blocks: [,,,]
     	};
 
@@ -3069,12 +3173,12 @@ var app = (function () {
     			p.textContent = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod\n      tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim\n      veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea\n      commodo consequat. Duis aute irure dolor in reprehenderit in voluptate\n      velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat\n      cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id\n      est laborum.";
     			t3 = space();
     			info.block.c();
-    			add_location(h1, file, 55, 4, 1159);
-    			add_location(p, file, 56, 4, 1184);
+    			add_location(h1, file, 58, 4, 1332);
+    			add_location(p, file, 59, 4, 1357);
     			attr_dev(header, "class", "interactive__header");
-    			add_location(header, file, 54, 2, 1118);
+    			add_location(header, file, 57, 2, 1291);
     			attr_dev(main, "class", "interactive");
-    			add_location(main, file, 53, 0, 1089);
+    			add_location(main, file, 56, 0, 1262);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
@@ -3132,7 +3236,8 @@ var app = (function () {
     	validate_slots('App', slots, []);
 
     	const dataSrc = {
-    		scatter: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSU94lUrY1Xpaq4_bXPOdIlC0KKTcybD4U6okMvJpjKvszQtyk12D82VG0fd-OvPK4ncdDfqDlgWfT-/pub?output=csv'
+    		expectancy: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQvNMW8VRNwnRHTFZbpF9OKsfBSntgbAVOJBsAXApg4QRqei69MV5Nnf-lpQWHtRdCXjMI3j6tzggWj/pub?output=csv',
+    		expenditure: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vR9aTw3tUrAAEk1z-Ppz_c-o_KafnZ3H0JcS4HqgpmD3on7Bp12Abf-4GG8BscYG8DK1y2f6g4ndq95/pub?output=csv'
     	};
 
     	const data = loadData();

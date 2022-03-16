@@ -4,8 +4,11 @@
   import Legend from './components/Legend.svelte'
 
   const dataSrc = {
-    scatter:
-      'https://docs.google.com/spreadsheets/d/e/2PACX-1vSU94lUrY1Xpaq4_bXPOdIlC0KKTcybD4U6okMvJpjKvszQtyk12D82VG0fd-OvPK4ncdDfqDlgWfT-/pub?output=csv',
+    expectancy:
+      'https://docs.google.com/spreadsheets/d/e/2PACX-1vQvNMW8VRNwnRHTFZbpF9OKsfBSntgbAVOJBsAXApg4QRqei69MV5Nnf-lpQWHtRdCXjMI3j6tzggWj/pub?output=csv',
+
+    expenditure:
+      'https://docs.google.com/spreadsheets/d/e/2PACX-1vR9aTw3tUrAAEk1z-Ppz_c-o_KafnZ3H0JcS4HqgpmD3on7Bp12Abf-4GG8BscYG8DK1y2f6g4ndq95/pub?output=csv',
   }
 
   const data = loadData()
@@ -71,13 +74,11 @@
   </div> -->
   {:then allData}
     <!-- <Options allData="{allData}" /> -->
-    {#each allData as data}
-      <Chart data="{data}" isMobile="{isMobile}" />
-    {/each}
+    <Chart data="{allData}" isMobile="{isMobile}" />
 
-    <div class="interactive__legend-container">
+    <!-- <div class="interactive__legend-container">
       <Legend />
-    </div>
+    </div> -->
 
     <!-- <footer class="interactive__source">
       <a href="https://loremipsum.csis.org" class="source-holder"
