@@ -4,7 +4,6 @@ const stringFields = [
   'iso',
   'country',
   'region',
-  'income_level'
 ]
 
 const stringify = d => {
@@ -16,22 +15,19 @@ const stringify = d => {
   return d
 }
 
-
 function parseData({ src }) {
   const scatterPromise = d3Fetch.csv(src.scatter, stringify)
-  
+
   let data = Promise.all([scatterPromise]).then(res => {
     let [dataset] = res
 
-    dataset = dataset.filter(d => 
-      (d.vaccine_index || d.vaccine_index === 0 ) 
-      && ( d.medical_aid_index || d.medical_aid_index === 0 ) 
-      && (d.total || d.total === 0) 
-    ) 
+    // Remove invalid values
+    dataset = dataset.filter(d => d.life_expectancy)
 
     return dataset
   })
-  
+
+  console.log(data)
   return data
 }
 

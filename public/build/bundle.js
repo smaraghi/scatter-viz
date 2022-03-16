@@ -4,6 +4,9 @@ var app = (function () {
     'use strict';
 
     function noop() { }
+    function is_promise(value) {
+        return value && typeof value === 'object' && typeof value.then === 'function';
+    }
     function add_location(element, file, line, column, char) {
         element.__svelte_meta = {
             loc: { file, line, column, char }
@@ -48,11 +51,11 @@ var app = (function () {
     function svg_element(name) {
         return document.createElementNS('http://www.w3.org/2000/svg', name);
     }
-    function text(data) {
+    function text$1(data) {
         return document.createTextNode(data);
     }
     function space() {
-        return text(' ');
+        return text$1(' ');
     }
     function listen(node, event, handler, options) {
         node.addEventListener(event, handler, options);
@@ -66,6 +69,14 @@ var app = (function () {
     }
     function children(element) {
         return Array.from(element.childNodes);
+    }
+    function set_style(node, key, value, important) {
+        if (value === null) {
+            node.style.removeProperty(key);
+        }
+        else {
+            node.style.setProperty(key, value, important ? 'important' : '');
+        }
     }
     function custom_event(type, detail, bubbles = false) {
         const e = document.createEvent('CustomEvent');
@@ -203,6 +214,88 @@ var app = (function () {
             });
             block.o(local);
         }
+    }
+
+    function handle_promise(promise, info) {
+        const token = info.token = {};
+        function update(type, index, key, value) {
+            if (info.token !== token)
+                return;
+            info.resolved = value;
+            let child_ctx = info.ctx;
+            if (key !== undefined) {
+                child_ctx = child_ctx.slice();
+                child_ctx[key] = value;
+            }
+            const block = type && (info.current = type)(child_ctx);
+            let needs_flush = false;
+            if (info.block) {
+                if (info.blocks) {
+                    info.blocks.forEach((block, i) => {
+                        if (i !== index && block) {
+                            group_outros();
+                            transition_out(block, 1, 1, () => {
+                                if (info.blocks[i] === block) {
+                                    info.blocks[i] = null;
+                                }
+                            });
+                            check_outros();
+                        }
+                    });
+                }
+                else {
+                    info.block.d(1);
+                }
+                block.c();
+                transition_in(block, 1);
+                block.m(info.mount(), info.anchor);
+                needs_flush = true;
+            }
+            info.block = block;
+            if (info.blocks)
+                info.blocks[index] = block;
+            if (needs_flush) {
+                flush();
+            }
+        }
+        if (is_promise(promise)) {
+            const current_component = get_current_component();
+            promise.then(value => {
+                set_current_component(current_component);
+                update(info.then, 1, info.value, value);
+                set_current_component(null);
+            }, error => {
+                set_current_component(current_component);
+                update(info.catch, 2, info.error, error);
+                set_current_component(null);
+                if (!info.hasCatch) {
+                    throw error;
+                }
+            });
+            // if we previously had a then/catch block, destroy it
+            if (info.current !== info.pending) {
+                update(info.pending, 0);
+                return true;
+            }
+        }
+        else {
+            if (info.current !== info.then) {
+                update(info.then, 1, info.value, promise);
+                return true;
+            }
+            info.resolved = promise;
+        }
+    }
+    function update_await_block_branch(info, ctx, dirty) {
+        const child_ctx = ctx.slice();
+        const { resolved } = info;
+        if (info.current === info.then) {
+            child_ctx[info.value] = resolved;
+        }
+        if (info.current === info.catch) {
+            child_ctx[info.error] = resolved;
+        }
+        info.block.p(child_ctx, dirty);
     }
 
     const globals = (typeof window !== 'undefined'
@@ -415,6 +508,226 @@ var app = (function () {
         }
         $capture_state() { }
         $inject_state() { }
+    }
+
+    var EOL = {},
+        EOF = {},
+        QUOTE = 34,
+        NEWLINE = 10,
+        RETURN = 13;
+
+    function objectConverter(columns) {
+      return new Function("d", "return {" + columns.map(function(name, i) {
+        return JSON.stringify(name) + ": d[" + i + "] || \"\"";
+      }).join(",") + "}");
+    }
+
+    function customConverter(columns, f) {
+      var object = objectConverter(columns);
+      return function(row, i) {
+        return f(object(row), i, columns);
+      };
+    }
+
+    // Compute unique columns in order of discovery.
+    function inferColumns(rows) {
+      var columnSet = Object.create(null),
+          columns = [];
+
+      rows.forEach(function(row) {
+        for (var column in row) {
+          if (!(column in columnSet)) {
+            columns.push(columnSet[column] = column);
+          }
+        }
+      });
+
+      return columns;
+    }
+
+    function pad(value, width) {
+      var s = value + "", length = s.length;
+      return length < width ? new Array(width - length + 1).join(0) + s : s;
+    }
+
+    function formatYear(year) {
+      return year < 0 ? "-" + pad(-year, 6)
+        : year > 9999 ? "+" + pad(year, 6)
+        : pad(year, 4);
+    }
+
+    function formatDate(date) {
+      var hours = date.getUTCHours(),
+          minutes = date.getUTCMinutes(),
+          seconds = date.getUTCSeconds(),
+          milliseconds = date.getUTCMilliseconds();
+      return isNaN(date) ? "Invalid Date"
+          : formatYear(date.getUTCFullYear()) + "-" + pad(date.getUTCMonth() + 1, 2) + "-" + pad(date.getUTCDate(), 2)
+          + (milliseconds ? "T" + pad(hours, 2) + ":" + pad(minutes, 2) + ":" + pad(seconds, 2) + "." + pad(milliseconds, 3) + "Z"
+          : seconds ? "T" + pad(hours, 2) + ":" + pad(minutes, 2) + ":" + pad(seconds, 2) + "Z"
+          : minutes || hours ? "T" + pad(hours, 2) + ":" + pad(minutes, 2) + "Z"
+          : "");
+    }
+
+    function dsvFormat(delimiter) {
+      var reFormat = new RegExp("[\"" + delimiter + "\n\r]"),
+          DELIMITER = delimiter.charCodeAt(0);
+
+      function parse(text, f) {
+        var convert, columns, rows = parseRows(text, function(row, i) {
+          if (convert) return convert(row, i - 1);
+          columns = row, convert = f ? customConverter(row, f) : objectConverter(row);
+        });
+        rows.columns = columns || [];
+        return rows;
+      }
+
+      function parseRows(text, f) {
+        var rows = [], // output rows
+            N = text.length,
+            I = 0, // current character index
+            n = 0, // current line number
+            t, // current token
+            eof = N <= 0, // current token followed by EOF?
+            eol = false; // current token followed by EOL?
+
+        // Strip the trailing newline.
+        if (text.charCodeAt(N - 1) === NEWLINE) --N;
+        if (text.charCodeAt(N - 1) === RETURN) --N;
+
+        function token() {
+          if (eof) return EOF;
+          if (eol) return eol = false, EOL;
+
+          // Unescape quotes.
+          var i, j = I, c;
+          if (text.charCodeAt(j) === QUOTE) {
+            while (I++ < N && text.charCodeAt(I) !== QUOTE || text.charCodeAt(++I) === QUOTE);
+            if ((i = I) >= N) eof = true;
+            else if ((c = text.charCodeAt(I++)) === NEWLINE) eol = true;
+            else if (c === RETURN) { eol = true; if (text.charCodeAt(I) === NEWLINE) ++I; }
+            return text.slice(j + 1, i - 1).replace(/""/g, "\"");
+          }
+
+          // Find next delimiter or newline.
+          while (I < N) {
+            if ((c = text.charCodeAt(i = I++)) === NEWLINE) eol = true;
+            else if (c === RETURN) { eol = true; if (text.charCodeAt(I) === NEWLINE) ++I; }
+            else if (c !== DELIMITER) continue;
+            return text.slice(j, i);
+          }
+
+          // Return last token before EOF.
+          return eof = true, text.slice(j, N);
+        }
+
+        while ((t = token()) !== EOF) {
+          var row = [];
+          while (t !== EOL && t !== EOF) row.push(t), t = token();
+          if (f && (row = f(row, n++)) == null) continue;
+          rows.push(row);
+        }
+
+        return rows;
+      }
+
+      function preformatBody(rows, columns) {
+        return rows.map(function(row) {
+          return columns.map(function(column) {
+            return formatValue(row[column]);
+          }).join(delimiter);
+        });
+      }
+
+      function format(rows, columns) {
+        if (columns == null) columns = inferColumns(rows);
+        return [columns.map(formatValue).join(delimiter)].concat(preformatBody(rows, columns)).join("\n");
+      }
+
+      function formatBody(rows, columns) {
+        if (columns == null) columns = inferColumns(rows);
+        return preformatBody(rows, columns).join("\n");
+      }
+
+      function formatRows(rows) {
+        return rows.map(formatRow).join("\n");
+      }
+
+      function formatRow(row) {
+        return row.map(formatValue).join(delimiter);
+      }
+
+      function formatValue(value) {
+        return value == null ? ""
+            : value instanceof Date ? formatDate(value)
+            : reFormat.test(value += "") ? "\"" + value.replace(/"/g, "\"\"") + "\""
+            : value;
+      }
+
+      return {
+        parse: parse,
+        parseRows: parseRows,
+        format: format,
+        formatBody: formatBody,
+        formatRows: formatRows,
+        formatRow: formatRow,
+        formatValue: formatValue
+      };
+    }
+
+    var csv$1 = dsvFormat(",");
+
+    var csvParse = csv$1.parse;
+
+    function responseText(response) {
+      if (!response.ok) throw new Error(response.status + " " + response.statusText);
+      return response.text();
+    }
+
+    function text(input, init) {
+      return fetch(input, init).then(responseText);
+    }
+
+    function dsvParse(parse) {
+      return function(input, init, row) {
+        if (arguments.length === 2 && typeof init === "function") row = init, init = undefined;
+        return text(input, init).then(function(response) {
+          return parse(response, row);
+        });
+      };
+    }
+
+    var csv = dsvParse(csvParse);
+
+    const stringFields = [
+      'iso',
+      'country',
+      'region',
+    ];
+
+    const stringify = d => {
+      for (var i in d) {
+        if (!stringFields.includes(i)) {
+          d[i] = +d[i];
+        }
+      }
+      return d
+    };
+
+    function parseData({ src }) {
+      const scatterPromise = csv(src.scatter, stringify);
+
+      let data = Promise.all([scatterPromise]).then(res => {
+        let [dataset] = res;
+
+        // Remove invalid values
+        dataset = dataset.filter(d => d.life_expectancy);
+
+        return dataset
+      });
+
+      console.log(data);
+      return data
     }
 
     function ascending(a, b) {
@@ -1747,7 +2060,7 @@ var app = (function () {
     			g = svg_element("g");
     			line = svg_element("line");
     			text_1 = svg_element("text");
-    			t = text(t_value);
+    			t = text$1(t_value);
     			attr_dev(line, "x1", /*padding*/ ctx[7].left);
     			attr_dev(line, "x2", line_x__value_1 = /*xScale*/ ctx[6](22));
     			add_location(line, file$2, 46, 10, 1041);
@@ -1812,7 +2125,7 @@ var app = (function () {
     			g = svg_element("g");
     			line = svg_element("line");
     			text_1 = svg_element("text");
-    			t = text(t_value);
+    			t = text$1(t_value);
     			attr_dev(line, "y1", line_y__value = /*yScale*/ ctx[5](0));
     			attr_dev(line, "y2", line_y__value_1 = /*yScale*/ ctx[5](13));
     			add_location(line, file$2, 56, 10, 1342);
@@ -2199,7 +2512,7 @@ var app = (function () {
     		c: function create() {
     			circle = svg_element("circle");
     			text_1 = svg_element("text");
-    			t = text(t_value);
+    			t = text$1(t_value);
     			attr_dev(circle, "cx", "5%");
     			attr_dev(circle, "cy", 10 + /*legendIndex*/ ctx[6] * 25 + 'px');
     			attr_dev(circle, "r", circle_r_value = /*d*/ ctx[4].r);
@@ -2276,7 +2589,7 @@ var app = (function () {
     		c: function create() {
     			figure = element("figure");
     			figcaption = element("figcaption");
-    			t0 = text(t0_value);
+    			t0 = text$1(t0_value);
     			t1 = space();
     			svg = svg_element("svg");
 
@@ -2498,18 +2811,164 @@ var app = (function () {
 
     function get_each_context(ctx, list, i) {
     	const child_ctx = ctx.slice();
-    	child_ctx[5] = list[i];
+    	child_ctx[1] = list[i];
     	return child_ctx;
     }
 
-    // (197:2) {#each allData as data}
+    // (94:2) {:catch error}
+    function create_catch_block(ctx) {
+    	let p;
+    	let t_value = /*error*/ ctx[10].message + "";
+    	let t;
+
+    	const block = {
+    		c: function create() {
+    			p = element("p");
+    			t = text$1(t_value);
+    			set_style(p, "color", "red");
+    			add_location(p, file, 94, 4, 2386);
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, p, anchor);
+    			append_dev(p, t);
+    		},
+    		p: noop,
+    		i: noop,
+    		o: noop,
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(p);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_catch_block.name,
+    		type: "catch",
+    		source: "(94:2) {:catch error}",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (72:2) {:then allData}
+    function create_then_block(ctx) {
+    	let t;
+    	let div;
+    	let legend;
+    	let current;
+    	let each_value = /*allData*/ ctx[7];
+    	validate_each_argument(each_value);
+    	let each_blocks = [];
+
+    	for (let i = 0; i < each_value.length; i += 1) {
+    		each_blocks[i] = create_each_block(get_each_context(ctx, each_value, i));
+    	}
+
+    	const out = i => transition_out(each_blocks[i], 1, 1, () => {
+    		each_blocks[i] = null;
+    	});
+
+    	legend = new Legend({ $$inline: true });
+
+    	const block = {
+    		c: function create() {
+    			for (let i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].c();
+    			}
+
+    			t = space();
+    			div = element("div");
+    			create_component(legend.$$.fragment);
+    			attr_dev(div, "class", "interactive__legend-container");
+    			add_location(div, file, 77, 4, 1960);
+    		},
+    		m: function mount(target, anchor) {
+    			for (let i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].m(target, anchor);
+    			}
+
+    			insert_dev(target, t, anchor);
+    			insert_dev(target, div, anchor);
+    			mount_component(legend, div, null);
+    			current = true;
+    		},
+    		p: function update(ctx, dirty) {
+    			if (dirty & /*data, isMobile*/ 3) {
+    				each_value = /*allData*/ ctx[7];
+    				validate_each_argument(each_value);
+    				let i;
+
+    				for (i = 0; i < each_value.length; i += 1) {
+    					const child_ctx = get_each_context(ctx, each_value, i);
+
+    					if (each_blocks[i]) {
+    						each_blocks[i].p(child_ctx, dirty);
+    						transition_in(each_blocks[i], 1);
+    					} else {
+    						each_blocks[i] = create_each_block(child_ctx);
+    						each_blocks[i].c();
+    						transition_in(each_blocks[i], 1);
+    						each_blocks[i].m(t.parentNode, t);
+    					}
+    				}
+
+    				group_outros();
+
+    				for (i = each_value.length; i < each_blocks.length; i += 1) {
+    					out(i);
+    				}
+
+    				check_outros();
+    			}
+    		},
+    		i: function intro(local) {
+    			if (current) return;
+
+    			for (let i = 0; i < each_value.length; i += 1) {
+    				transition_in(each_blocks[i]);
+    			}
+
+    			transition_in(legend.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			each_blocks = each_blocks.filter(Boolean);
+
+    			for (let i = 0; i < each_blocks.length; i += 1) {
+    				transition_out(each_blocks[i]);
+    			}
+
+    			transition_out(legend.$$.fragment, local);
+    			current = false;
+    		},
+    		d: function destroy(detaching) {
+    			destroy_each(each_blocks, detaching);
+    			if (detaching) detach_dev(t);
+    			if (detaching) detach_dev(div);
+    			destroy_component(legend);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_then_block.name,
+    		type: "then",
+    		source: "(72:2) {:then allData}",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (74:4) {#each allData as data}
     function create_each_block(ctx) {
     	let chart;
     	let current;
 
     	chart = new Chart({
     			props: {
-    				data: /*data*/ ctx[5],
+    				data: /*data*/ ctx[1],
     				isMobile: /*isMobile*/ ctx[0]
     			},
     			$$inline: true
@@ -2546,7 +3005,29 @@ var app = (function () {
     		block,
     		id: create_each_block.name,
     		type: "each",
-    		source: "(197:2) {#each allData as data}",
+    		source: "(74:4) {#each allData as data}",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (68:15)      <!-- <div class="loading-container">     <div class="loading"></div>   </div> -->   {:then allData}
+    function create_pending_block(ctx) {
+    	const block = {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		i: noop,
+    		o: noop,
+    		d: noop
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_pending_block.name,
+    		type: "pending",
+    		source: "(68:15)      <!-- <div class=\\\"loading-container\\\">     <div class=\\\"loading\\\"></div>   </div> -->   {:then allData}",
     		ctx
     	});
 
@@ -2560,23 +3041,22 @@ var app = (function () {
     	let t1;
     	let p;
     	let t3;
-    	let t4;
-    	let div;
-    	let legend;
     	let current;
-    	let each_value = /*allData*/ ctx[1];
-    	validate_each_argument(each_value);
-    	let each_blocks = [];
 
-    	for (let i = 0; i < each_value.length; i += 1) {
-    		each_blocks[i] = create_each_block(get_each_context(ctx, each_value, i));
-    	}
+    	let info = {
+    		ctx,
+    		current: null,
+    		token: null,
+    		hasCatch: true,
+    		pending: create_pending_block,
+    		then: create_then_block,
+    		catch: create_catch_block,
+    		value: 7,
+    		error: 10,
+    		blocks: [,,,]
+    	};
 
-    	const out = i => transition_out(each_blocks[i], 1, 1, () => {
-    		each_blocks[i] = null;
-    	});
-
-    	legend = new Legend({ $$inline: true });
+    	handle_promise(/*data*/ ctx[1], info);
 
     	const block = {
     		c: function create() {
@@ -2588,22 +3068,13 @@ var app = (function () {
     			p = element("p");
     			p.textContent = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod\n      tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim\n      veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea\n      commodo consequat. Duis aute irure dolor in reprehenderit in voluptate\n      velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat\n      cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id\n      est laborum.";
     			t3 = space();
-
-    			for (let i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].c();
-    			}
-
-    			t4 = space();
-    			div = element("div");
-    			create_component(legend.$$.fragment);
-    			add_location(h1, file, 178, 4, 2976);
-    			add_location(p, file, 179, 4, 3001);
+    			info.block.c();
+    			add_location(h1, file, 55, 4, 1159);
+    			add_location(p, file, 56, 4, 1184);
     			attr_dev(header, "class", "interactive__header");
-    			add_location(header, file, 177, 2, 2935);
-    			attr_dev(div, "class", "interactive__legend-container");
-    			add_location(div, file, 200, 2, 3783);
+    			add_location(header, file, 54, 2, 1118);
     			attr_dev(main, "class", "interactive");
-    			add_location(main, file, 176, 0, 2906);
+    			add_location(main, file, 53, 0, 1089);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
@@ -2615,69 +3086,33 @@ var app = (function () {
     			append_dev(header, t1);
     			append_dev(header, p);
     			append_dev(main, t3);
-
-    			for (let i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].m(main, null);
-    			}
-
-    			append_dev(main, t4);
-    			append_dev(main, div);
-    			mount_component(legend, div, null);
+    			info.block.m(main, info.anchor = null);
+    			info.mount = () => main;
+    			info.anchor = null;
     			current = true;
     		},
-    		p: function update(ctx, [dirty]) {
-    			if (dirty & /*allData, isMobile*/ 3) {
-    				each_value = /*allData*/ ctx[1];
-    				validate_each_argument(each_value);
-    				let i;
-
-    				for (i = 0; i < each_value.length; i += 1) {
-    					const child_ctx = get_each_context(ctx, each_value, i);
-
-    					if (each_blocks[i]) {
-    						each_blocks[i].p(child_ctx, dirty);
-    						transition_in(each_blocks[i], 1);
-    					} else {
-    						each_blocks[i] = create_each_block(child_ctx);
-    						each_blocks[i].c();
-    						transition_in(each_blocks[i], 1);
-    						each_blocks[i].m(main, t4);
-    					}
-    				}
-
-    				group_outros();
-
-    				for (i = each_value.length; i < each_blocks.length; i += 1) {
-    					out(i);
-    				}
-
-    				check_outros();
-    			}
+    		p: function update(new_ctx, [dirty]) {
+    			ctx = new_ctx;
+    			update_await_block_branch(info, ctx, dirty);
     		},
     		i: function intro(local) {
     			if (current) return;
-
-    			for (let i = 0; i < each_value.length; i += 1) {
-    				transition_in(each_blocks[i]);
-    			}
-
-    			transition_in(legend.$$.fragment, local);
+    			transition_in(info.block);
     			current = true;
     		},
     		o: function outro(local) {
-    			each_blocks = each_blocks.filter(Boolean);
-
-    			for (let i = 0; i < each_blocks.length; i += 1) {
-    				transition_out(each_blocks[i]);
+    			for (let i = 0; i < 3; i += 1) {
+    				const block = info.blocks[i];
+    				transition_out(block);
     			}
 
-    			transition_out(legend.$$.fragment, local);
     			current = false;
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(main);
-    			destroy_each(each_blocks, detaching);
-    			destroy_component(legend);
+    			info.block.d();
+    			info.token = null;
+    			info = null;
     		}
     	};
 
@@ -2696,48 +3131,16 @@ var app = (function () {
     	let { $$slots: slots = {}, $$scope } = $$props;
     	validate_slots('App', slots, []);
 
-    	const allData = [
-    		{
-    			mineral: 'cobalt',
-    			mineralData: [
-    				{ name: 'USA', x: 5, y: 4 },
-    				{ name: 'Canda', x: 4, y: 6 },
-    				{ name: 'Zimbabwe', x: 7, y: 8 },
-    				{ name: ' Chile', x: 8, y: 12 },
-    				{ name: 'Hungary', x: 9, y: 10 }
-    			]
-    		},
-    		{
-    			mineral: 'talc',
-    			mineralData: [
-    				{ name: 'USA', x: 5, y: 4 },
-    				{ name: 'Canda', x: 4, y: 6 },
-    				{ name: 'Zimbabwe', x: 7, y: 8 },
-    				{ name: ' Chile', x: 8, y: 12 },
-    				{ name: 'Hungary', x: 9, y: 10 }
-    			]
-    		},
-    		{
-    			mineral: 'diamond',
-    			mineralData: [
-    				{ name: 'USA', x: 5, y: 4 },
-    				{ name: 'Canda', x: 4, y: 6 },
-    				{ name: 'Zimbabwe', x: 7, y: 8 },
-    				{ name: ' Chile', x: 8, y: 12 },
-    				{ name: 'Hungary', x: 9, y: 10 }
-    			]
-    		},
-    		{
-    			mineral: 'emerald',
-    			mineralData: [
-    				{ name: 'USA', x: 5, y: 4 },
-    				{ name: 'Canda', x: 4, y: 6 },
-    				{ name: 'Zimbabwe', x: 7, y: 8 },
-    				{ name: ' Chile', x: 8, y: 12 },
-    				{ name: 'Hungary', x: 9, y: 10 }
-    			]
-    		}
-    	];
+    	const dataSrc = {
+    		scatter: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSU94lUrY1Xpaq4_bXPOdIlC0KKTcybD4U6okMvJpjKvszQtyk12D82VG0fd-OvPK4ncdDfqDlgWfT-/pub?output=csv'
+    	};
+
+    	const data = loadData();
+
+    	async function loadData() {
+    		let res = await parseData({ src: dataSrc });
+    		return res;
+    	}
 
     	const init = () => {
     		resize(mq);
@@ -2778,9 +3181,12 @@ var app = (function () {
     	});
 
     	$$self.$capture_state = () => ({
+    		parseData,
     		Chart,
     		Legend,
-    		allData,
+    		dataSrc,
+    		data,
+    		loadData,
     		init,
     		isMobile,
     		mq,
@@ -2796,7 +3202,7 @@ var app = (function () {
     		$$self.$inject_state($$props.$$inject);
     	}
 
-    	return [isMobile, allData];
+    	return [isMobile, data];
     }
 
     class App extends SvelteComponentDev {

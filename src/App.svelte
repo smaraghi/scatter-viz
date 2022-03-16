@@ -1,144 +1,21 @@
 <script>
-  // import parseData from './data.js'
+  import parseData from './data.js'
   import Chart from './components/Chart.svelte'
   import Legend from './components/Legend.svelte'
 
-  // const dataSrc = {
-  //   scatter: '',
-  // }
+  const dataSrc = {
+    scatter:
+      'https://docs.google.com/spreadsheets/d/e/2PACX-1vSU94lUrY1Xpaq4_bXPOdIlC0KKTcybD4U6okMvJpjKvszQtyk12D82VG0fd-OvPK4ncdDfqDlgWfT-/pub?output=csv',
+  }
 
-  // const data = loadData()
+  const data = loadData()
 
-  // async function loadData() {
-  //   let res = await parseData({
-  //     src: dataSrc,
-  //   })
-  //   return res
-  // }
-
-  // Mock data; Use structure above for production
-  const allData = [
-    {
-      mineral: 'cobalt',
-      mineralData: [
-        {
-          name: 'USA',
-          x: 5,
-          y: 4,
-        },
-        {
-          name: 'Canda',
-          x: 4,
-          y: 6,
-        },
-        {
-          name: 'Zimbabwe',
-          x: 7,
-          y: 8,
-        },
-        {
-          name: ' Chile',
-          x: 8,
-          y: 12,
-        },
-        {
-          name: 'Hungary',
-          x: 9,
-          y: 10,
-        },
-      ],
-    },
-    {
-      mineral: 'talc',
-      mineralData: [
-        {
-          name: 'USA',
-          x: 5,
-          y: 4,
-        },
-        {
-          name: 'Canda',
-          x: 4,
-          y: 6,
-        },
-        {
-          name: 'Zimbabwe',
-          x: 7,
-          y: 8,
-        },
-        {
-          name: ' Chile',
-          x: 8,
-          y: 12,
-        },
-        {
-          name: 'Hungary',
-          x: 9,
-          y: 10,
-        },
-      ],
-    },
-    {
-      mineral: 'diamond',
-      mineralData: [
-        {
-          name: 'USA',
-          x: 5,
-          y: 4,
-        },
-        {
-          name: 'Canda',
-          x: 4,
-          y: 6,
-        },
-        {
-          name: 'Zimbabwe',
-          x: 7,
-          y: 8,
-        },
-        {
-          name: ' Chile',
-          x: 8,
-          y: 12,
-        },
-        {
-          name: 'Hungary',
-          x: 9,
-          y: 10,
-        },
-      ],
-    },
-    {
-      mineral: 'emerald',
-      mineralData: [
-        {
-          name: 'USA',
-          x: 5,
-          y: 4,
-        },
-        {
-          name: 'Canda',
-          x: 4,
-          y: 6,
-        },
-        {
-          name: 'Zimbabwe',
-          x: 7,
-          y: 8,
-        },
-        {
-          name: ' Chile',
-          x: 8,
-          y: 12,
-        },
-        {
-          name: 'Hungary',
-          x: 9,
-          y: 10,
-        },
-      ],
-    },
-  ]
+  async function loadData() {
+    let res = await parseData({
+      src: dataSrc,
+    })
+    return res
+  }
 
   const init = () => {
     resize(mq)
@@ -188,21 +65,21 @@
     </p>
   </header>
 
-  <!-- {#await data} -->
-  <!-- <div class="loading-container">
+  {#await data}
+    <!-- <div class="loading-container">
     <div class="loading"></div>
   </div> -->
-  <!-- {:then allData} -->
-  <!-- <Options allData="{allData}" /> -->
-  {#each allData as data}
-    <Chart data="{data}" isMobile="{isMobile}" />
-  {/each}
+  {:then allData}
+    <!-- <Options allData="{allData}" /> -->
+    {#each allData as data}
+      <Chart data="{data}" isMobile="{isMobile}" />
+    {/each}
 
-  <div class="interactive__legend-container">
-    <Legend />
-  </div>
+    <div class="interactive__legend-container">
+      <Legend />
+    </div>
 
-  <!-- <footer class="interactive__source">
+    <!-- <footer class="interactive__source">
       <a href="https://loremipsum.csis.org" class="source-holder"
         ><img
           src="./images/logo.svg"
@@ -214,9 +91,9 @@
         /></a
       >
     </footer> -->
-  <!-- {:catch error} -->
-  <!-- <p style="color: red">{error.message}</p> -->
-  <!-- {/await} -->
+  {:catch error}
+    <p style="color: red">{error.message}</p>
+  {/await}
 </main>
 
 <style type="text/scss" global>
